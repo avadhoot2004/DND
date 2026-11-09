@@ -1,0 +1,76 @@
+export const UserRole = {
+  CUSTOMER: 'CUSTOMER',
+  STAFF: 'STAFF',
+  ADMIN: 'ADMIN'
+};
+
+export const StationType = {
+  PC: 'PC',
+  PS5: 'PS5',
+  XBOX: 'XBOX',
+  VR: 'VR'
+};
+
+export const StationStatus = {
+  AVAILABLE: 'AVAILABLE',
+  MAINTENANCE: 'MAINTENANCE',
+  DEACTIVATED: 'DEACTIVATED'
+};
+
+export const SlotStatus = {
+  HELD: 'HELD',
+  CONFIRMED: 'CONFIRMED',
+  MAINTENANCE: 'MAINTENANCE'
+};
+
+export const BookingStatus = {
+  PENDING_HOLD: 'PENDING_HOLD',
+  CONFIRMED: 'CONFIRMED',
+  ACTIVE: 'ACTIVE',
+  COMPLETED: 'COMPLETED',
+  CANCELLED: 'CANCELLED',
+  NO_SHOW: 'NO_SHOW',
+  EXPIRED: 'EXPIRED'
+};
+
+export const PaymentStatus = {
+  UNPAID: 'UNPAID',
+  PARTIALLY_PAID: 'PARTIALLY_PAID',
+  PAID: 'PAID',
+  REFUNDED: 'REFUNDED',
+  PAID_AFTER_EXPIRATION: 'PAID_AFTER_EXPIRATION',
+  PAYMENT_FAILED: 'PAYMENT_FAILED'
+};
+
+export const RefundStatus = {
+  NONE: 'NONE',
+  PENDING: 'PENDING',
+  PROCESSED: 'PROCESSED',
+  FAILED: 'FAILED'
+};
+
+export const MaintenanceStatus = {
+  SCHEDULED: 'SCHEDULED',
+  ACTIVE: 'ACTIVE',
+  COMPLETED: 'COMPLETED',
+  CANCELLED: 'CANCELLED'
+};
+
+export const PaymentType = {
+  FULL: 'FULL',
+  DEPOSIT: 'DEPOSIT',
+  WALK_IN_CASH: 'WALK_IN_CASH'
+};
+
+export const BookingDefaults = {
+  SLOT_INTERVAL_MINUTES: 15,
+  MIN_DURATION_MINUTES: 30,
+  MAX_DURATION_MINUTES: 240,
+  HOLD_DURATION_MINUTES: 10,
+  CANCELLATION_DEADLINE_HOURS: 2,
+  NO_SHOW_GRACE_MINUTES: 15,
+  DEFAULT_TIMEZONE: 'Asia/Kolkata',
+  OPENING_HOUR: 10,
+  CLOSING_HOUR: 23
+};
+

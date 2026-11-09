@@ -1,0 +1,20 @@
+{
+  "name": "dnd-gaming-hub",
+  "version": "1.0.0",
+  "description": "Gaming lounge booking and management application",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "seed:server": "npm run seed --prefix server",
+    "test:server": "npm run test --prefix server",
+    "test:e2e": "playwright test",
+    "build:client": "npm run build --prefix client"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "concurrently": "^9.1.2"
+  }
+}
