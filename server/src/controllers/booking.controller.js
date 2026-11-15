@@ -1,6 +1,7 @@
 import { BookingEngineService } from '../services/bookingEngine.service.js';
 import { Booking } from '../models/booking.model.js';
 import mongoose from 'mongoose';
+import { UserRole } from '../constants/index.js';
 
 export async function createHold(req, res, next) {
   try {
@@ -53,14 +54,38 @@ export async function releaseHold(req, res, next) {
 export async function getBooking(req, res, next) {
   try {
     const { id } = req.params;
+
+    // 1. Auth check BEFORE any DB lookup.
+    //    Caller must present either a session (req.user populated by optionalAuth)
+    //    OR a guest access token in header/body. Neither → 401 immediately.
+    const providedGuestToken =
+      req.get('x-guest-access-token') || req.body?.guestAccessToken;
+    const hasSession = !!req.user;
+
+    if (!hasSession && !providedGuestToken) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required'
+        }
+      });
+    }
+
+    // 2. Look up the booking.
+    //    `guestAccessTokenHash` is `select: false` on the schema, so it must be
+    //    explicitly re-included to compare against a supplied guest token.
     let query;
     if (mongoose.Types.ObjectId.isValid(id)) {
       query = { _id: id };
     } else {
       query = { bookingReference: id.toUpperCase() };
     }
+    const booking = await Booking.findOne(query)
+      .select('+guestAccessTokenHash')
+      .populate('stationId', 'identifier name type hourlyRatePaise')
+      .lean();
 
-    const booking = await Booking.findOne(query).populate('stationId', 'identifier name type hourlyRatePaise').lean();
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -71,7 +96,62 @@ export async function getBooking(req, res, next) {
       });
     }
 
-    res.status(200).json({
+    // 3. Authorization for this specific booking.
+    let grantedAs = null; // 'admin' | 'owner' | 'guest'
+
+    if (hasSession) {
+      const isPrivileged =
+        req.user.role === UserRole.ADMIN || req.user.role === UserRole.STAFF;
+      const isOwner =
+        booking.customerId &&
+        booking.customerId.toString() === req.user._id.toString();
+
+      if (isPrivileged) {
+        grantedAs = 'admin';
+      } else if (isOwner) {
+        grantedAs = 'owner';
+      } else {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have access to this booking'
+          }
+        });
+      }
+    } else {
+      // Guest path — booking must be a guest booking with a matching token hash.
+      if (!booking.isGuest) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have access to this booking'
+          }
+        });
+      }
+      const providedHash = Booking.hashToken(providedGuestToken);
+      if (providedHash !== booking.guestAccessTokenHash) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'INVALID_GUEST_ACCESS_TOKEN',
+            message: 'Invalid guest access token'
+          }
+        });
+      }
+      grantedAs = 'guest';
+    }
+
+    // 4. Strip sensitive fields. `.lean()` bypasses the schema toJSON transform,
+    //    so `guestAccessTokenHash` must be removed explicitly for all callers.
+    if (grantedAs === 'guest') {
+      delete booking.notes;
+      delete booking.paymentReference;
+    }
+    delete booking.guestAccessTokenHash;
+
+    return res.status(200).json({
       success: true,
       data: booking
     });
@@ -188,4 +268,3 @@ export async function extendSession(req, res, next) {
     next(error);
   }
 }
-

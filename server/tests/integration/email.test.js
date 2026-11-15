@@ -27,8 +27,6 @@ import {
 } from '../../src/constants/index.js';
 import { fetchCsrf } from '../helpers/csrf.js';
 
-// ── Test-wide fixtures ───────────────────────────────────────────────────────
-
 describe('Email Notification Integration Tests', () => {
   let adminCookie;
   let adminCsrf;
@@ -37,7 +35,6 @@ describe('Email Notification Integration Tests', () => {
   let customerUser;
   let testStation;
 
-  // Ensure indexes are created before any test data is inserted.
   beforeAll(async () => {
     await Promise.all([
       Station.init(),
@@ -49,11 +46,8 @@ describe('Email Notification Integration Tests', () => {
   });
 
   beforeEach(async () => {
-    // The global setup.js already clears all collections.
-    // Reset the email mock so every test starts with a clean slate.
     mockTransport.reset();
 
-    // ── Station ────────────────────────────────────────────────────────────
     testStation = await Station.create({
       identifier: 'PC-EMAIL-01',
       name: 'High-End Gaming PC #1',
@@ -62,7 +56,6 @@ describe('Email Notification Integration Tests', () => {
       status: StationStatus.AVAILABLE
     });
 
-    // ── Admin ──────────────────────────────────────────────────────────────
     const adminHash = await User.hashPassword('AdminPass123!');
     await User.create({
       email: 'admin@dndgaming.com',
@@ -78,7 +71,6 @@ describe('Email Notification Integration Tests', () => {
     adminCookie = adminLogin.headers['set-cookie'];
     adminCsrf = await fetchCsrf(request, app, adminCookie);
 
-    // ── Registered Customer ────────────────────────────────────────────────
     const custHash = await User.hashPassword('CustomerPass123!');
     customerUser = await User.create({
       email: 'gamer@dndgaming.com',
@@ -95,9 +87,6 @@ describe('Email Notification Integration Tests', () => {
     customerCsrf = await fetchCsrf(request, app, customerCookie);
   });
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  /** Create a booking hold for a registered customer. */
   async function createCustomerHold(startISO, endISO) {
     const res = await request(app)
       .post('/api/bookings/hold')
@@ -113,7 +102,6 @@ describe('Email Notification Integration Tests', () => {
     return res.body.data.booking;
   }
 
-  /** Create a booking hold for a guest (no session cookie). */
   async function createGuestHold(startISO, endISO, guestInfo) {
     const res = await request(app)
       .post('/api/bookings/hold')
@@ -128,10 +116,6 @@ describe('Email Notification Integration Tests', () => {
     return res.body.data;
   }
 
-  /**
-   * Initiate a payment session and return the payment reference + signed
-   * webhook payload ready to fire.
-   */
   async function buildWebhookPayload(bookingId, cookie, guestAccessToken) {
     const initBody = { bookingId };
     if (guestAccessToken) initBody.guestAccessToken = guestAccessToken;
@@ -139,7 +123,6 @@ describe('Email Notification Integration Tests', () => {
     const initReq = request(app)
       .post('/api/payments/initiate')
       .set('Cookie', cookie || '');
-    // Only send CSRF token when a session cookie is present (registered customer).
     if (cookie) initReq.set('X-CSRF-Token', customerCsrf);
     const initRes = await initReq.send(initBody);
     expect(initRes.status).toBe(200);
@@ -150,12 +133,12 @@ describe('Email Notification Integration Tests', () => {
       paymentReference,
       bookingId,
       amountPaise,
-      gatewayTransactionId: `GTW_EMAIL_${Date.now()}_${Math.random().toString(36).slice(2)}`
+      gatewayTransactionId: `GTW_EMAIL_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      timestamp: new Date().toISOString()
     };
     return { payload, signature: MockPaymentService.signPayload(payload) };
   }
 
-  /** Fire a webhook and return the supertest response. */
   async function fireWebhook(payload, signature) {
     return request(app)
       .post('/api/payments/webhook')
@@ -163,9 +146,6 @@ describe('Email Notification Integration Tests', () => {
       .send(payload);
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Suite 1 — Payment Webhook → Email Delivery
-  // ════════════════════════════════════════════════════════════════════════════
   describe('Payment Webhook → Email Delivery', () => {
     it('sends one confirmation email to registered customer after successful payment', async () => {
       const booking = await createCustomerHold('2027-02-01T10:00:00.000Z', '2027-02-01T11:00:00.000Z');
@@ -175,8 +155,6 @@ describe('Email Notification Integration Tests', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.booking.bookingStatus).toBe(BookingStatus.CONFIRMED);
-
-      // Exactly one email dispatched
       expect(mockTransport.sentMails).toHaveLength(1);
 
       const mail = mockTransport.sentMails[0];
@@ -188,7 +166,7 @@ describe('Email Notification Integration Tests', () => {
       expect(mail.text).toContain('High-End Gaming PC #1');
       expect(mail.text).toContain('PC-EMAIL-01');
       expect(mail.text).toContain(res.body.data.booking.bookingReference);
-      expect(mail.text).toContain('₹100.00'); // 10000 paise / 100 = ₹100
+      expect(mail.text).toContain('₹100.00');
     });
 
     it('sends one confirmation email to guestInfo.email for a guest booking', async () => {
@@ -231,7 +209,8 @@ describe('Email Notification Integration Tests', () => {
         paymentReference,
         bookingId: booking._id,
         amountPaise,
-        failureReason: 'Simulated card decline'
+        failureReason: 'Simulated card decline',
+        timestamp: new Date().toISOString()
       };
       const sig = MockPaymentService.signPayload(failPayload);
 
@@ -239,12 +218,10 @@ describe('Email Notification Integration Tests', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.success).toBe(false);
-      // No email on failure
       expect(mockTransport.sentMails).toHaveLength(0);
     });
 
     it('booking remains CONFIRMED and response is HTTP 200 when email transport fails', async () => {
-      // Pre-arm the transport to throw on the next sendMail call
       mockTransport.shouldFail = true;
 
       const booking = await createCustomerHold('2027-02-01T16:00:00.000Z', '2027-02-01T17:00:00.000Z');
@@ -252,14 +229,10 @@ describe('Email Notification Integration Tests', () => {
 
       const res = await fireWebhook(payload, signature);
 
-      // HTTP response must still be 200 — email failure is non-fatal
       expect(res.status).toBe(200);
       expect(res.body.data.booking.bookingStatus).toBe(BookingStatus.CONFIRMED);
-
-      // Email was not delivered (transport failed)
       expect(mockTransport.sentMails).toHaveLength(0);
 
-      // Booking is CONFIRMED in the database
       const dbBooking = await Booking.findById(booking._id);
       expect(dbBooking.bookingStatus).toBe(BookingStatus.CONFIRMED);
     });
@@ -268,17 +241,14 @@ describe('Email Notification Integration Tests', () => {
       const booking = await createCustomerHold('2027-02-01T18:00:00.000Z', '2027-02-01T19:00:00.000Z');
       const { payload, signature } = await buildWebhookPayload(booking._id, customerCookie);
 
-      // First webhook delivery — fresh confirmation
       const res1 = await fireWebhook(payload, signature);
       expect(res1.status).toBe(200);
       expect(mockTransport.sentMails).toHaveLength(1);
 
-      // Second webhook delivery — idempotent, no new email
       const res2 = await fireWebhook(payload, signature);
       expect(res2.status).toBe(200);
       expect(res2.body.data.idempotent).toBe(true);
 
-      // Total emails sent across both deliveries: still exactly 1
       expect(mockTransport.sentMails).toHaveLength(1);
     });
 
@@ -286,8 +256,6 @@ describe('Email Notification Integration Tests', () => {
       const booking = await createCustomerHold('2027-02-01T20:00:00.000Z', '2027-02-01T21:00:00.000Z');
       const { payload, signature } = await buildWebhookPayload(booking._id, customerCookie);
 
-      // Fire two identical webhooks concurrently — MongoDB WriteConflict will allow
-      // only one transaction to commit; the other takes the idempotency recovery path.
       const [res1, res2] = await Promise.all([
         fireWebhook(payload, signature),
         fireWebhook(payload, signature)
@@ -296,19 +264,13 @@ describe('Email Notification Integration Tests', () => {
       expect(res1.status).toBe(200);
       expect(res2.status).toBe(200);
 
-      // Final booking state is CONFIRMED
       const dbBooking = await Booking.findById(booking._id);
       expect(dbBooking.bookingStatus).toBe(BookingStatus.CONFIRMED);
 
-      // Exactly one email sent — the concurrent loser took the recovery path
-      // (idempotent: true) and never called EmailService.sendBookingConfirmation.
       expect(mockTransport.sentMails).toHaveLength(1);
     });
   });
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Suite 2 — Admin / Staff Direct Confirm (Cash Walk-in) → Email Delivery
-  // ════════════════════════════════════════════════════════════════════════════
   describe('Admin Direct Confirm (Cash Walk-in) → Email Delivery', () => {
     it('sends confirmation email to registered customer when admin confirms their booking', async () => {
       const booking = await createCustomerHold('2027-03-01T10:00:00.000Z', '2027-03-01T11:00:00.000Z');
@@ -365,7 +327,6 @@ describe('Email Notification Integration Tests', () => {
         .set('X-CSRF-Token', adminCsrf)
         .send({ paymentStatus: 'PAID' });
 
-      // Response must still succeed even though email threw
       expect(confirmRes.status).toBe(200);
       expect(confirmRes.body.data.bookingStatus).toBe(BookingStatus.CONFIRMED);
       expect(mockTransport.sentMails).toHaveLength(0);
@@ -375,9 +336,6 @@ describe('Email Notification Integration Tests', () => {
     });
   });
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Suite 3 — Email content validation
-  // ════════════════════════════════════════════════════════════════════════════
   describe('Email content', () => {
     it('email body contains all required booking fields', async () => {
       const booking = await createCustomerHold('2027-04-01T10:00:00.000Z', '2027-04-01T12:00:00.000Z');
@@ -389,19 +347,17 @@ describe('Email Notification Integration Tests', () => {
       const mail = mockTransport.sentMails[0];
       const confirmedBooking = res.body.data.booking;
 
-      // Subject
       expect(mail.subject).toContain('🎮');
       expect(mail.subject).toContain('Booking Confirmed');
       expect(mail.subject).toContain(confirmedBooking.bookingReference);
 
-      // Body fields
-      expect(mail.text).toContain(confirmedBooking.bookingReference); // Reference
-      expect(mail.text).toContain('High-End Gaming PC #1');            // Station name
-      expect(mail.text).toContain('PC-EMAIL-01');                      // Station identifier
-      expect(mail.text).toContain('120');                              // Duration (2 hours = 120 min)
-      expect(mail.text).toContain('₹200.00');                         // Amount (2 hr × ₹100/hr)
-      expect(mail.text).toContain(payload.paymentReference);           // Payment reference
-      expect(mail.from).toContain('DND Gaming Hub');
+      expect(mail.text).toContain(confirmedBooking.bookingReference);
+      expect(mail.text).toContain('High-End Gaming PC #1');
+      expect(mail.text).toContain('PC-EMAIL-01');
+      expect(mail.text).toContain('120');
+      expect(mail.text).toContain('₹200.00');
+      expect(mail.text).toContain(payload.paymentReference);
+      expect(mail.text).toContain('DND Gaming Hub');
     });
   });
 });

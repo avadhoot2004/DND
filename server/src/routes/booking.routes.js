@@ -84,8 +84,10 @@ router.post(
   extendSession
 );
 
-// Retrieve booking details by ID or reference
-router.get('/:id', getBooking);
+// Retrieve booking details by ID or reference.
+// optionalAuth populates req.user if a session exists; guests fall through with no user.
+// Authorization + guest-token validation happen in the controller.
+router.get('/:id', optionalAuth, getBooking);
 
 // Maintenance routes (Staff and Admin only)
 router.post(
@@ -104,4 +106,3 @@ router.delete(
 );
 
 export default router;
-

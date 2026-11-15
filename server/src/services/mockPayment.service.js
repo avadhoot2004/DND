@@ -182,6 +182,22 @@ export class MockPaymentService {
       throw error;
     }
 
+    // 2. Replay protection — reject timestamps outside the tolerance window.
+    //    Runs after signature verification (so an attacker cannot forge a
+    //    timestamp without also breaking the HMAC) and before any business
+    //    logic (so a replayed stale payload never reaches the database).
+    const WEBHOOK_TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes
+    const eventTimestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : NaN;
+    if (
+      !Number.isFinite(eventTimestamp) ||
+      Math.abs(Date.now() - eventTimestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS
+    ) {
+      const error = new Error('Webhook timestamp is missing, invalid, or outside the allowed tolerance');
+      error.statusCode = 400;
+      error.code = 'WEBHOOK_TIMESTAMP_INVALID';
+      throw error;
+    }
+
     const { event, paymentReference, bookingId, amountPaise, gatewayTransactionId, failureReason } = payload;
     if (!event || !paymentReference || !bookingId || typeof amountPaise !== 'number') {
       const error = new Error('Malformed webhook event payload');
