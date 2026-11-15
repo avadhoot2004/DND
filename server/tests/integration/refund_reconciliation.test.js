@@ -19,9 +19,12 @@ import {
 
 describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', () => {
   let adminCookie;
+  let adminCsrf;
   let customerCookie;
+  let customerCsrf;
   let customerUser;
   let otherCustomerCookie;
+  let otherCustomerCsrf;
   let testStation;
 
   beforeAll(async () => {
@@ -64,6 +67,11 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
     });
     adminCookie = adminLogin.headers['set-cookie'];
 
+    const adminCsrfRes = await request(app)
+      .get('/api/auth/csrf-token')
+      .set('Cookie', adminCookie);
+    adminCsrf = adminCsrfRes.body.csrfToken;
+
     // Create Customer user 1
     const custHash = await User.hashPassword('CustomerPass123!');
     customerUser = await User.create({
@@ -80,6 +88,11 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
     });
     customerCookie = custLogin.headers['set-cookie'];
 
+    const csrfRes = await request(app)
+      .get('/api/auth/csrf-token')
+      .set('Cookie', customerCookie);
+    customerCsrf = csrfRes.body.csrfToken;
+
     // Create Customer user 2 (for authorization tests)
     const cust2Hash = await User.hashPassword('CustomerPass123!');
     await User.create({
@@ -95,6 +108,11 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       password: 'CustomerPass123!'
     });
     otherCustomerCookie = cust2Login.headers['set-cookie'];
+
+    const otherCsrfRes = await request(app)
+      .get('/api/auth/csrf-token')
+      .set('Cookie', otherCustomerCookie);
+    otherCustomerCsrf = otherCsrfRes.body.csrfToken;
   });
 
   describe('Late-Payment Reconciliation on Expired Holds', () => {
@@ -102,7 +120,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // 1. Create a hold
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-05T14:00:00.000Z',
@@ -110,13 +128,14 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
           isGuest: false
         });
 
+      console.log('HOLD RES', holdRes.status, JSON.stringify(holdRes.body));
       expect(holdRes.status).toBe(201);
       const bookingId = holdRes.body.data.booking._id;
 
       // 2. Initiate payment session
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
 
       expect(initRes.status).toBe(200);
@@ -129,12 +148,14 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       });
 
       // 4. Webhook arrives with payment.success after hold expiration
+
       const eventPayload = {
         event: 'payment.success',
         paymentReference,
         bookingId,
         amountPaise,
-        gatewayTransactionId: 'GTW_LATE_PAY_123'
+        gatewayTransactionId: 'GTW_LATE_PAY_123',
+        timestamp: new Date().toISOString()
       };
       const signature = MockPaymentService.signPayload(eventPayload);
 
@@ -142,6 +163,9 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
         .post('/api/payments/webhook')
         .set('x-mock-signature', signature)
         .send(eventPayload);
+
+      console.log('LATE RES', lateRes.status, JSON.stringify(lateRes.body));
+      expect(lateRes.status).toBe(410);
 
       // Webhook responds HTTP 410 HOLD_EXPIRED (contract preserved)
       expect(lateRes.status).toBe(410);
@@ -174,7 +198,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Create hold and simulate late payment
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-05T16:00:00.000Z',
@@ -185,7 +209,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference, amountPaise } = initRes.body.data;
 
@@ -199,7 +223,8 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
         paymentReference,
         bookingId,
         amountPaise,
-        gatewayTransactionId: 'GTW_LATE_DUP_1'
+        gatewayTransactionId: 'GTW_LATE_DUP_1',
+        timestamp: new Date().toISOString()
       };
       const signature = MockPaymentService.signPayload(eventPayload);
 
@@ -236,7 +261,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -248,7 +273,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // 2. Initiate and complete payment
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -265,6 +290,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // 3. Customer releases / cancels the confirmed booking
       const cancelRes = await request(app)
         .post(`/api/bookings/${bookingId}/release`)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ reason: 'Plans changed' });
 
       expect(cancelRes.status).toBe(200);
@@ -291,7 +317,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: nearStart.toISOString(),
@@ -302,7 +328,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -313,6 +339,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Attempt cancellation inside the 2-hour window
       const cancelRes = await request(app)
         .post(`/api/bookings/${bookingId}/release`)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ reason: 'Last minute cancellation' });
 
       expect(cancelRes.status).toBe(400);
@@ -337,7 +364,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -348,7 +375,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference, amountPaise } = initRes.body.data;
 
@@ -359,7 +386,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Call refund API
       const refundRes = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           paymentReference,
           reason: 'Customer requested refund via portal'
@@ -385,7 +412,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -396,7 +423,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -409,7 +436,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // First refund request
       const ref1 = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .set('Idempotency-Key', idempotencyKey)
         .send({ paymentReference });
 
@@ -420,7 +447,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Repeated refund request with identical idempotency key
       const ref2 = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .set('Idempotency-Key', idempotencyKey)
         .send({ paymentReference });
 
@@ -436,7 +463,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -447,7 +474,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -461,11 +488,11 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       const [res1, res2] = await Promise.all([
         request(app)
           .post('/api/payments/refund')
-          .set('Cookie', customerCookie)
+          .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
           .send({ paymentReference, idempotencyKey }),
         request(app)
           .post('/api/payments/refund')
-          .set('Cookie', customerCookie)
+          .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
           .send({ paymentReference, idempotencyKey })
       ]);
 
@@ -487,7 +514,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -498,7 +525,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -509,7 +536,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // 1. First attempt simulates failure
       const failRes = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           paymentReference,
           simulateFailure: true,
@@ -530,7 +557,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // 2. Retry without failure simulation
       const retryRes = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           paymentReference,
           simulateFailure: false,
@@ -556,7 +583,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -567,7 +594,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -578,7 +605,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Customer 2 attempts to refund Customer 1's payment
       const unauthorizedRes = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', otherCustomerCookie)
+        .set('Cookie', otherCustomerCookie).set('X-CSRF-Token', otherCustomerCsrf)
         .send({ paymentReference });
 
       expect(unauthorizedRes.status).toBe(403);
@@ -592,7 +619,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const holdRes = await request(app)
         .post('/api/bookings/hold')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: futureStart.toISOString(),
@@ -603,7 +630,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
 
       const initRes = await request(app)
         .post('/api/payments/initiate')
-        .set('Cookie', customerCookie)
+        .set('Cookie', customerCookie).set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -614,7 +641,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Admin executes refund
       const adminRefundRes = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', adminCookie)
+        .set('Cookie', adminCookie).set('X-CSRF-Token', adminCsrf)
         .send({
           paymentReference,
           reason: 'Administrative goodwill refund'
@@ -681,7 +708,7 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
       // Non-existent
       const notFoundRes = await request(app)
         .post('/api/payments/refund')
-        .set('Cookie', adminCookie)
+        .set('Cookie', adminCookie).set('X-CSRF-Token', adminCsrf)
         .send({ paymentReference: 'MOCK-PAY-DOES-NOT-EXIST' });
 
       expect(notFoundRes.status).toBe(404);
@@ -689,4 +716,3 @@ describe('Late-Payment Reconciliation & Idempotent Refunds Integration Tests', (
     });
   });
 });
-

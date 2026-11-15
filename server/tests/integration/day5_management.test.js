@@ -14,10 +14,13 @@ import {
   StationType,
   UserRole
 } from '../../src/constants/index.js';
+import { fetchCsrf } from '../helpers/csrf.js';
 
 describe('Day 5: Customer History & Owner Management APIs', () => {
   let adminCookie;
+  let adminCsrf;
   let customerCookie;
+  let customerCsrf;
   let customerUser;
   let testStation;
 
@@ -60,6 +63,7 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       password: 'AdminPass123!'
     });
     adminCookie = adminLoginRes.headers['set-cookie'];
+    adminCsrf = await fetchCsrf(request, app, adminCookie);
 
     // Customer
     const custHash = await User.hashPassword('CustPass123!');
@@ -76,6 +80,7 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       password: 'CustPass123!'
     });
     customerCookie = custLoginRes.headers['set-cookie'];
+    customerCsrf = await fetchCsrf(request, app, customerCookie);
   });
 
   describe('Customer Booking History (GET /api/bookings/my-bookings)', () => {
@@ -121,6 +126,7 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       const res = await request(app)
         .patch(`/api/stations/${testStation._id}`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({
           name: 'Apex Predator Super Rig #1',
           hourlyRatePaise: 14000
@@ -134,7 +140,8 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
     it('should allow admin to deactivate a station', async () => {
       const res = await request(app)
         .delete(`/api/stations/${testStation._id}`)
-        .set('Cookie', adminCookie);
+        .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf);
 
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe(StationStatus.DEACTIVATED);
@@ -148,12 +155,14 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       const patchRes = await request(app)
         .patch(`/api/stations/${testStation._id}`)
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ name: 'Hacked Station' });
       expect(patchRes.status).toBe(403);
 
       const deleteRes = await request(app)
         .delete(`/api/stations/${testStation._id}`)
-        .set('Cookie', customerCookie);
+        .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf);
       expect(deleteRes.status).toBe(403);
     });
   });
@@ -171,7 +180,8 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       // 1. Start Session
       const startRes = await request(app)
         .post(`/api/bookings/${booking._id}/start`)
-        .set('Cookie', adminCookie);
+        .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf);
 
       expect(startRes.status).toBe(200);
       expect(startRes.body.data.bookingStatus).toBe(BookingStatus.ACTIVE);
@@ -180,7 +190,8 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       // 2. Complete Session
       const completeRes = await request(app)
         .post(`/api/bookings/${booking._id}/complete`)
-        .set('Cookie', adminCookie);
+        .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf);
 
       expect(completeRes.status).toBe(200);
       expect(completeRes.body.data.bookingStatus).toBe(BookingStatus.COMPLETED);
@@ -202,7 +213,8 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
 
       const noShowRes = await request(app)
         .post(`/api/bookings/${booking._id}/no-show`)
-        .set('Cookie', adminCookie);
+        .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf);
 
       expect(noShowRes.status).toBe(200);
       expect(noShowRes.body.data.bookingStatus).toBe(BookingStatus.NO_SHOW);
@@ -224,6 +236,7 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       const extendRes = await request(app)
         .post(`/api/bookings/${booking._id}/extend`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ extensionMinutes: 30 });
 
       expect(extendRes.status).toBe(200);
@@ -260,6 +273,7 @@ describe('Day 5: Customer History & Owner Management APIs', () => {
       const extendRes = await request(app)
         .post(`/api/bookings/${bookingA._id}/extend`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ extensionMinutes: 30 });
 
       expect(extendRes.status).toBe(409);

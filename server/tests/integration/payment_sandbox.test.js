@@ -16,12 +16,16 @@ import {
   UserRole,
   PaymentStatus
 } from '../../src/constants/index.js';
+import { fetchCsrf } from '../helpers/csrf.js';
 
 describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
   let adminCookie;
+  let adminCsrf;
   let customerCookie;
+  let customerCsrf;
   let customerUser;
   let otherCustomerCookie;
+  let otherCustomerCsrf;
   let testStation;
 
   beforeAll(async () => {
@@ -63,6 +67,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       password: 'AdminPass123!'
     });
     adminCookie = loginRes.headers['set-cookie'];
+    adminCsrf = await fetchCsrf(request, app, adminCookie);
 
     // Create Customer user 1
     const custHash = await User.hashPassword('CustomerPass123!');
@@ -79,6 +84,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       password: 'CustomerPass123!'
     });
     customerCookie = custLoginRes.headers['set-cookie'];
+    customerCsrf = await fetchCsrf(request, app, customerCookie);
 
     // Create Customer user 2 (for unauthorized access tests)
     const cust2Hash = await User.hashPassword('Customer2Pass123!');
@@ -95,6 +101,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       password: 'Customer2Pass123!'
     });
     otherCustomerCookie = cust2LoginRes.headers['set-cookie'];
+    otherCustomerCsrf = await fetchCsrf(request, app, otherCustomerCookie);
   });
 
   describe('Direct /api/bookings/:id/confirm Route Security', () => {
@@ -126,6 +133,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T14:00:00.000Z',
@@ -139,6 +147,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const confirmRes = await request(app)
         .post(`/api/bookings/${bookingId}/confirm`)
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ paymentStatus: 'PAID' });
 
       expect(confirmRes.status).toBe(403);
@@ -149,6 +158,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T14:00:00.000Z',
@@ -163,6 +173,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const confirmRes = await request(app)
         .post(`/api/bookings/${bookingId}/confirm`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ paymentStatus: 'PAID' });
 
       expect(confirmRes.status).toBe(200);
@@ -177,6 +188,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T15:00:00.000Z',
@@ -190,6 +202,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
 
       expect(initRes.status).toBe(200);
@@ -203,7 +216,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       expect(txn).toBeDefined();
       expect(txn.status).toBe('INITIATED');
 
-      // 3. Simulate Payment Success
+      // 3. Simulate Payment Success (no cookie, no token — no session)
       const simRes = await request(app)
         .post('/api/payments/mock-simulate')
         .send({
@@ -236,6 +249,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T16:00:00.000Z',
@@ -247,6 +261,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -319,6 +334,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T18:00:00.000Z',
@@ -331,6 +347,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const unauthorizedRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', otherCustomerCookie)
+        .set('X-CSRF-Token', otherCustomerCsrf)
         .send({ bookingId });
 
       expect(unauthorizedRes.status).toBe(403);
@@ -343,6 +360,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T19:00:00.000Z',
@@ -354,6 +372,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference, amountPaise } = initRes.body.data;
 
@@ -364,7 +383,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
         amountPaise
       };
 
-      // 1. Missing signature
+      // 1. Missing signature (no cookie, no token — webhook endpoint is exempt)
       const missingSigRes = await request(app)
         .post('/api/payments/webhook')
         .send(eventPayload);
@@ -384,6 +403,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T20:00:00.000Z',
@@ -395,6 +415,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference } = initRes.body.data;
 
@@ -420,6 +441,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T21:00:00.000Z',
@@ -431,6 +453,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference, amountPaise } = initRes.body.data;
 
@@ -470,6 +493,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T12:00:00.000Z',
@@ -481,6 +505,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference, amountPaise } = initRes.body.data;
 
@@ -540,6 +565,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const holdRes = await request(app)
         .post('/api/bookings/hold')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-01T22:00:00.000Z',
@@ -551,6 +577,7 @@ describe('Payment Sandbox & Confirmation Security Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId });
       const { paymentReference, amountPaise } = initRes.body.data;
 

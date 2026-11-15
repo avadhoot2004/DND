@@ -5,9 +5,11 @@ import { Station } from '../../src/models/station.model.js';
 import { User } from '../../src/models/user.model.js';
 import { StationStatus, StationType, UserRole } from '../../src/constants/index.js';
 import { seedStations } from '../../src/seeds/seedStations.js';
+import { fetchCsrf } from '../helpers/csrf.js';
 
 describe('Station APIs Integration Tests', () => {
   let adminCookie;
+  let adminCsrf;
 
   beforeEach(async () => {
     // Clear and seed stations before each test
@@ -30,6 +32,7 @@ describe('Station APIs Integration Tests', () => {
       password: 'AdminPass123!'
     });
     adminCookie = loginRes.headers['set-cookie'];
+    adminCsrf = await fetchCsrf(request, app, adminCookie);
   });
 
   describe('GET /api/stations', () => {
@@ -142,6 +145,7 @@ describe('Station APIs Integration Tests', () => {
       const res = await request(app)
         .post('/api/stations')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send(newStation);
 
       expect(res.status).toBe(201);
@@ -165,6 +169,7 @@ describe('Station APIs Integration Tests', () => {
       const res = await request(app)
         .post('/api/stations')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send(duplicate);
 
       expect(res.status).toBe(409);
@@ -183,6 +188,7 @@ describe('Station APIs Integration Tests', () => {
       const res = await request(app)
         .post('/api/stations')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send(invalid);
 
       expect(res.status).toBe(400);

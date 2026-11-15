@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import app from '../../src/app.js';
 import { User } from '../../src/models/user.model.js';
 import { UserRole, StationType } from '../../src/constants/index.js';
+import { fetchCsrf } from '../helpers/csrf.js';
 
 describe('Authentication & Authorization Integration Tests', () => {
   beforeEach(async () => {
@@ -153,7 +154,7 @@ describe('Authentication & Authorization Integration Tests', () => {
       });
       const cookie = loginRes.headers['set-cookie'];
 
-      // 2. Log out
+      // 2. Log out (exempt from CSRF by middleware — no token needed)
       const logoutRes = await request(app).post('/api/auth/logout').set('Cookie', cookie);
       expect(logoutRes.status).toBe(200);
 
@@ -180,10 +181,12 @@ describe('Authentication & Authorization Integration Tests', () => {
       // Register normal customer
       const regRes = await request(app).post('/api/auth/register').send(validCustomer);
       const customerCookie = regRes.headers['set-cookie'];
+      const customerCsrf = await fetchCsrf(request, app, customerCookie);
 
       const res = await request(app)
         .post('/api/stations')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({
           identifier: 'PC-99',
           name: 'Customer Attempted PC',
@@ -212,11 +215,13 @@ describe('Authentication & Authorization Integration Tests', () => {
         password: 'AdminSecured123!'
       });
       const adminCookie = loginRes.headers['set-cookie'];
+      const adminCsrf = await fetchCsrf(request, app, adminCookie);
 
       // Create station with admin cookie
       const res = await request(app)
         .post('/api/stations')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({
           identifier: 'PC-99',
           name: 'Authorized Admin PC',

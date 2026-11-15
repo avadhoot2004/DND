@@ -15,9 +15,11 @@ import {
   StationType,
   UserRole
 } from '../../src/constants/index.js';
+import { fetchCsrf } from '../helpers/csrf.js';
 
 describe('Booking Engine & Concurrency Integration Tests', () => {
   let adminCookie;
+  let adminCsrf;
   let customerUser;
   let testStation;
 
@@ -71,6 +73,7 @@ describe('Booking Engine & Concurrency Integration Tests', () => {
       password: 'AdminPass123!'
     });
     adminCookie = loginRes.headers['set-cookie'];
+    adminCsrf = await fetchCsrf(request, app, adminCookie);
 
     // Create Customer user
     const custHash = await User.hashPassword('CustomerPass123!');
@@ -213,6 +216,7 @@ describe('Booking Engine & Concurrency Integration Tests', () => {
       const confirmRes = await request(app)
         .post(`/api/bookings/${bookingId}/confirm`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ paymentStatus: 'PAID' });
 
       expect(confirmRes.status).toBe(200);
@@ -309,6 +313,7 @@ describe('Booking Engine & Concurrency Integration Tests', () => {
       const res = await request(app)
         .post('/api/bookings/maintenance')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-02T10:00:00.000Z',
@@ -334,6 +339,7 @@ describe('Booking Engine & Concurrency Integration Tests', () => {
       await request(app)
         .post('/api/bookings/maintenance')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-02T14:00:00.000Z',
@@ -368,6 +374,7 @@ describe('Booking Engine & Concurrency Integration Tests', () => {
       const res = await request(app)
         .post('/api/bookings/maintenance')
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({
           stationId: testStation._id.toString(),
           startTime: '2026-11-02T16:00:00.000Z',

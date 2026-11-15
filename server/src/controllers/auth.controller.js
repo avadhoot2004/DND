@@ -76,3 +76,25 @@ export function getCurrentUser(req, res) {
     }
   });
 }
+
+export function getCsrfToken(req, res) {
+  const token = req.csrfToken();
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authenticated session required'
+    });
+  }
+
+  req.session.save((err) => {
+    if (err) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save session'
+      });
+    }
+
+    return res.status(200).json({ csrfToken: token });
+  });
+}

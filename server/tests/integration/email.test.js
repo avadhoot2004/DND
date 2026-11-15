@@ -25,12 +25,15 @@ import {
   StationType,
   UserRole
 } from '../../src/constants/index.js';
+import { fetchCsrf } from '../helpers/csrf.js';
 
 // ── Test-wide fixtures ───────────────────────────────────────────────────────
 
 describe('Email Notification Integration Tests', () => {
   let adminCookie;
+  let adminCsrf;
   let customerCookie;
+  let customerCsrf;
   let customerUser;
   let testStation;
 
@@ -73,6 +76,7 @@ describe('Email Notification Integration Tests', () => {
       password: 'AdminPass123!'
     });
     adminCookie = adminLogin.headers['set-cookie'];
+    adminCsrf = await fetchCsrf(request, app, adminCookie);
 
     // ── Registered Customer ────────────────────────────────────────────────
     const custHash = await User.hashPassword('CustomerPass123!');
@@ -88,6 +92,7 @@ describe('Email Notification Integration Tests', () => {
       password: 'CustomerPass123!'
     });
     customerCookie = custLogin.headers['set-cookie'];
+    customerCsrf = await fetchCsrf(request, app, customerCookie);
   });
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -97,6 +102,7 @@ describe('Email Notification Integration Tests', () => {
     const res = await request(app)
       .post('/api/bookings/hold')
       .set('Cookie', customerCookie)
+      .set('X-CSRF-Token', customerCsrf)
       .send({
         stationId: testStation._id.toString(),
         startTime: startISO,
@@ -130,10 +136,12 @@ describe('Email Notification Integration Tests', () => {
     const initBody = { bookingId };
     if (guestAccessToken) initBody.guestAccessToken = guestAccessToken;
 
-    const initRes = await request(app)
+    const initReq = request(app)
       .post('/api/payments/initiate')
-      .set('Cookie', cookie || '')
-      .send(initBody);
+      .set('Cookie', cookie || '');
+    // Only send CSRF token when a session cookie is present (registered customer).
+    if (cookie) initReq.set('X-CSRF-Token', customerCsrf);
+    const initRes = await initReq.send(initBody);
     expect(initRes.status).toBe(200);
 
     const { paymentReference, amountPaise } = initRes.body.data;
@@ -214,6 +222,7 @@ describe('Email Notification Integration Tests', () => {
       const initRes = await request(app)
         .post('/api/payments/initiate')
         .set('Cookie', customerCookie)
+        .set('X-CSRF-Token', customerCsrf)
         .send({ bookingId: booking._id });
       const { paymentReference, amountPaise } = initRes.body.data;
 
@@ -307,6 +316,7 @@ describe('Email Notification Integration Tests', () => {
       const confirmRes = await request(app)
         .post(`/api/bookings/${booking._id}/confirm`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ paymentStatus: 'PAID' });
 
       expect(confirmRes.status).toBe(200);
@@ -332,6 +342,7 @@ describe('Email Notification Integration Tests', () => {
       const confirmRes = await request(app)
         .post(`/api/bookings/${booking._id}/confirm`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ paymentStatus: 'PAID' });
 
       expect(confirmRes.status).toBe(200);
@@ -351,6 +362,7 @@ describe('Email Notification Integration Tests', () => {
       const confirmRes = await request(app)
         .post(`/api/bookings/${booking._id}/confirm`)
         .set('Cookie', adminCookie)
+        .set('X-CSRF-Token', adminCsrf)
         .send({ paymentStatus: 'PAID' });
 
       // Response must still succeed even though email threw

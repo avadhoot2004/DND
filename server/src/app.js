@@ -10,6 +10,7 @@ import availabilityRoutes from './routes/availability.routes.js';
 import bookingRoutes from './routes/booking.routes.js';
 import paymentRoutes from './routes/payment.routes.js';
 import { createSessionMiddleware } from './config/session.js';
+import { csrfProtection } from './middleware/csrf.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
 
 const app = express();
@@ -23,7 +24,7 @@ app.use(
     origin: env.CLIENT_URL,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-mock-signature']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-mock-signature', 'X-CSRF-Token']
   })
 );
 
@@ -33,6 +34,12 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // Session management (backed by MongoDB connect-mongo)
 app.use(createSessionMiddleware());
+
+// CSRF protection (must run after session, before routes).
+// Generates a per-authenticated-session token and validates X-CSRF-Token
+// on state-changing requests. Exempts safe methods, /api/auth/csrf-token,
+// and /api/payments/webhook.
+app.use(csrfProtection);
 
 // Logging (disabled in test environment)
 if (env.NODE_ENV !== 'test') {
@@ -46,7 +53,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/availability', availabilityRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/payments', paymentRoutes);
-
 
 // Fallback 404 and global error handling
 app.use(notFound);
