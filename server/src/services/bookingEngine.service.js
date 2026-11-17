@@ -37,6 +37,103 @@ function isSlotConflictOrWriteConflict(error) {
   return false;
 }
 
+function isBookingReferenceDuplicateKeyError(error) {
+  if (!error) return false;
+  const isDup =
+    error.code === 11000 ||
+    error.codeName === 'DuplicateKey' ||
+    error.errorResponse?.code === 11000 ||
+    error.errorResponse?.codeName === 'DuplicateKey' ||
+    (Array.isArray(error.writeErrors) && error.writeErrors.some((e) => e.code === 11000));
+
+  if (!isDup) return false;
+
+  const keyPattern =
+    error.keyPattern ||
+    error.errorResponse?.keyPattern ||
+    (Array.isArray(error.writeErrors) && error.writeErrors[0]?.err?.keyPattern) ||
+    (Array.isArray(error.writeErrors) && error.writeErrors[0]?.keyPattern);
+
+  if (keyPattern && keyPattern.bookingReference) {
+    return true;
+  }
+
+  const msg =
+    error.message ||
+    error.errmsg ||
+    (Array.isArray(error.writeErrors) && error.writeErrors[0]?.errmsg) ||
+    '';
+
+  return msg.includes('bookingReference') || msg.includes('bookingReference_1');
+}
+
+function isSlotDuplicateKeyError(error) {
+  if (!error) return false;
+  if (isBookingReferenceDuplicateKeyError(error)) return false;
+
+  const isDup =
+    error.code === 11000 ||
+    error.codeName === 'DuplicateKey' ||
+    error.errorResponse?.code === 11000 ||
+    error.errorResponse?.codeName === 'DuplicateKey' ||
+    (Array.isArray(error.writeErrors) && error.writeErrors.some((e) => e.code === 11000));
+
+  if (!isDup) return false;
+
+  const keyPattern =
+    error.keyPattern ||
+    error.errorResponse?.keyPattern ||
+    (Array.isArray(error.writeErrors) && error.writeErrors[0]?.err?.keyPattern);
+
+  if (keyPattern && keyPattern.stationId && keyPattern.slotStartTime) {
+    return true;
+  }
+
+  const msg =
+    error.message ||
+    error.errmsg ||
+    (Array.isArray(error.writeErrors) && error.writeErrors[0]?.errmsg) ||
+    '';
+
+  if (
+    msg.includes('stationId_1_slotStartTime_1') ||
+    (msg.includes('reservationslots') &&
+      msg.includes('stationId') &&
+      msg.includes('slotStartTime'))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isTransientTransactionError(error) {
+  if (!error) return false;
+  if (
+    error.code === 112 ||
+    error.codeName === 'WriteConflict' ||
+    error.errorResponse?.code === 112 ||
+    error.errorResponse?.codeName === 'WriteConflict'
+  ) {
+    return true;
+  }
+  if (Array.isArray(error.writeErrors) && error.writeErrors.some((e) => e.code === 112)) {
+    return true;
+  }
+  if (typeof error.hasErrorLabel === 'function' && error.hasErrorLabel('TransientTransactionError')) {
+    return true;
+  }
+  if (
+    error.errorLabels &&
+    (Array.isArray(error.errorLabels)
+      ? error.errorLabels.includes('TransientTransactionError')
+      : error.errorLabels.has?.('TransientTransactionError'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export class BookingEngineService {
   /**
    * Validate and discretize a continuous time range into 15-minute quanta.
@@ -174,7 +271,7 @@ export class BookingEngineService {
 
   /**
    * Atomic hold creation on discrete reservation slots.
-   * Backed by a MongoDB multi-document ACID transaction.
+   * Backed by a MongoDB multi-document ACID transaction with automatic retries on transient write conflicts.
    * Throws 409 Conflict if ANY discrete slot collides with an existing held or confirmed slot.
    */
   static async createBookingHold({
@@ -187,154 +284,182 @@ export class BookingEngineService {
     paymentType = PaymentType.FULL,
     notes = ''
   }) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    // Discretize into 15-minute quanta and validate duration
+    const slotTimes = BookingEngineService.discretizeSlots(startTime, endTime);
+    const durationMinutes =
+      (new Date(endTime).getTime() - new Date(startTime).getTime()) / (60 * 1000);
 
-    try {
-      // Reclaim expired slots first within the transactional session
-      await BookingEngineService.reclaimExpiredSlots(session);
-
-      // Verify station existence and availability
-      let station;
-      if (mongoose.Types.ObjectId.isValid(stationId)) {
-        station = await Station.findById(stationId).session(session);
-      } else {
-        station = await Station.findOne({ identifier: stationId.toUpperCase() }).session(session);
-      }
-
-      if (!station) {
-        const error = new Error('Station was not found');
-        error.statusCode = 404;
-        error.code = 'STATION_NOT_FOUND';
-        throw error;
-      }
-
-      if (station.status === StationStatus.DEACTIVATED) {
-        const error = new Error('This station has been deactivated and is unavailable for booking');
+    // Validate guest details if guest reservation
+    if (isGuest) {
+      if (!guestInfo || !guestInfo.fullName || !guestInfo.email) {
+        const error = new Error('Guest bookings require fullName and email address');
         error.statusCode = 400;
-        error.code = 'STATION_DEACTIVATED';
+        error.code = 'INVALID_GUEST_INFO';
         throw error;
       }
+    }
 
-      if (station.status === StationStatus.MAINTENANCE) {
-        const error = new Error('This station is currently undergoing maintenance');
-        error.statusCode = 400;
-        error.code = 'STATION_UNDER_MAINTENANCE';
-        throw error;
-      }
+    // Generate tokens and hold expiration before the transaction callback
+    let rawGuestToken = null;
+    let guestAccessTokenHash = null;
+    if (isGuest) {
+      rawGuestToken = Booking.generateGuestToken();
+      guestAccessTokenHash = Booking.hashToken(rawGuestToken);
+    }
 
-      // Discretize into 15-minute quanta
-      const slotTimes = BookingEngineService.discretizeSlots(startTime, endTime);
-      const durationMinutes =
-        (new Date(endTime).getTime() - new Date(startTime).getTime()) / (60 * 1000);
+    const holdExpiresAt = new Date(
+      Date.now() + BookingDefaults.HOLD_DURATION_MINUTES * 60 * 1000
+    );
 
-      // Validate guest details if guest reservation
-      if (isGuest) {
-        if (!guestInfo || !guestInfo.fullName || !guestInfo.email) {
-          const error = new Error('Guest bookings require fullName and email address');
-          error.statusCode = 400;
-          error.code = 'INVALID_GUEST_INFO';
+    const MAX_REFERENCE_ATTEMPTS = 3;
+
+    for (let attempt = 1; attempt <= MAX_REFERENCE_ATTEMPTS; attempt++) {
+      const bookingReference = Booking.generateBookingReference();
+      const session = await mongoose.startSession();
+      let createdBooking = null;
+
+      try {
+        await session.withTransaction(async () => {
+          // Reclaim expired slots first within the transactional session
+          await BookingEngineService.reclaimExpiredSlots(session);
+
+          // Verify station existence and availability
+          let station;
+          if (mongoose.Types.ObjectId.isValid(stationId)) {
+            station = await Station.findById(stationId).session(session);
+          } else {
+            station = await Station.findOne({ identifier: stationId.toUpperCase() }).session(session);
+          }
+
+          if (!station) {
+            const error = new Error('Station was not found');
+            error.statusCode = 404;
+            error.code = 'STATION_NOT_FOUND';
+            throw error;
+          }
+
+          if (station.status === StationStatus.DEACTIVATED) {
+            const error = new Error('This station has been deactivated and is unavailable for booking');
+            error.statusCode = 400;
+            error.code = 'STATION_DEACTIVATED';
+            throw error;
+          }
+
+          if (station.status === StationStatus.MAINTENANCE) {
+            const error = new Error('This station is currently undergoing maintenance');
+            error.statusCode = 400;
+            error.code = 'STATION_UNDER_MAINTENANCE';
+            throw error;
+          }
+
+          // Calculate prices in integer paise
+          const hourlyRatePaise = station.hourlyRatePaise;
+          const totalAmountPaise = Math.round((hourlyRatePaise * durationMinutes) / 60);
+          const depositAmountPaise = Math.round(totalAmountPaise * 0.5);
+
+          // Create Booking record
+          const [booking] = await Booking.create(
+            [
+              {
+                bookingReference,
+                stationId: station._id,
+                customerId: customerId || null,
+                isGuest: !!isGuest,
+                guestInfo: isGuest ? guestInfo : undefined,
+                guestAccessTokenHash,
+                startTime: new Date(startTime),
+                endTime: new Date(endTime),
+                durationMinutes,
+                priceSnapshot: {
+                  hourlyRatePaise,
+                  totalAmountPaise,
+                  depositAmountPaise
+                },
+                bookingStatus: BookingStatus.PENDING_HOLD,
+                paymentStatus: PaymentStatus.UNPAID,
+                paymentType: paymentType || PaymentType.FULL,
+                holdExpiresAt,
+                notes: notes || ''
+              }
+            ],
+            { session }
+          );
+
+          // Pre-check for occupied slots before write operations
+          const occupied = await ReservationSlot.findOne({
+            stationId: station._id,
+            slotStartTime: { $in: slotTimes }
+          }).session(session);
+
+          if (occupied) {
+            const conflictError = new Error(
+              'One or more of the selected time slots are already reserved or held'
+            );
+            conflictError.statusCode = 409;
+            conflictError.code = 'SLOT_UNAVAILABLE';
+            throw conflictError;
+          }
+
+          // Prepare discrete slots for insertion
+          const slotDocs = slotTimes.map((t) => ({
+            stationId: station._id,
+            slotStartTime: t,
+            bookingId: booking._id,
+            status: SlotStatus.HELD,
+            expiresAt: holdExpiresAt
+          }));
+
+          // Insert slots. If any slot exists for (stationId, slotStartTime), unique compound index throws E11000!
+          await ReservationSlot.insertMany(slotDocs, { session });
+
+          createdBooking = booking;
+        });
+
+        await createdBooking.populate('stationId', 'identifier name type hourlyRatePaise');
+
+        return {
+          booking: createdBooking.toJSON(),
+          guestToken: rawGuestToken
+        };
+      } catch (error) {
+        // 1. If it's a DuplicateKey specifically on bookingReference_1, retry with newly generated reference
+        if (isBookingReferenceDuplicateKeyError(error)) {
+          if (attempt < MAX_REFERENCE_ATTEMPTS) {
+            continue;
+          }
+          // Do NOT map booking-reference collisions to SLOT_UNAVAILABLE or CONCURRENCY_CONFLICT
           throw error;
         }
+
+        // 2. If it's already an explicit 409 SLOT_UNAVAILABLE from pre-check findOne, rethrow directly
+        if (error.statusCode === 409 && error.code === 'SLOT_UNAVAILABLE') {
+          throw error;
+        }
+
+        // 3. If it's a DuplicateKey (11000) specifically attributable to reservation slots, map to 409 SLOT_UNAVAILABLE
+        if (isSlotDuplicateKeyError(error)) {
+          const conflictError = new Error(
+            'One or more of the selected time slots are already reserved or held'
+          );
+          conflictError.statusCode = 409;
+          conflictError.code = 'SLOT_UNAVAILABLE';
+          throw conflictError;
+        }
+
+        // 4. If transient transaction retries were exhausted, return 503 rather than falsely reporting 409 SLOT_UNAVAILABLE
+        if (isTransientTransactionError(error)) {
+          const concurrencyError = new Error(
+            'Unable to complete booking hold due to high concurrent transaction contention. Please retry.'
+          );
+          concurrencyError.statusCode = 503;
+          concurrencyError.code = 'CONCURRENCY_CONFLICT';
+          throw concurrencyError;
+        }
+
+        throw error;
+      } finally {
+        await session.endSession();
       }
-
-      let rawGuestToken = null;
-      let guestAccessTokenHash = null;
-      if (isGuest) {
-        rawGuestToken = Booking.generateGuestToken();
-        guestAccessTokenHash = Booking.hashToken(rawGuestToken);
-      }
-
-      // Calculate prices in integer paise
-      const hourlyRatePaise = station.hourlyRatePaise;
-      const totalAmountPaise = Math.round((hourlyRatePaise * durationMinutes) / 60);
-      const depositAmountPaise = Math.round(totalAmountPaise * 0.5);
-
-      const holdExpiresAt = new Date(
-        Date.now() + BookingDefaults.HOLD_DURATION_MINUTES * 60 * 1000
-      );
-      const bookingReference = Booking.generateBookingReference();
-
-      // Create Booking record
-      const [booking] = await Booking.create(
-        [
-          {
-            bookingReference,
-            stationId: station._id,
-            customerId: customerId || null,
-            isGuest: !!isGuest,
-            guestInfo: isGuest ? guestInfo : undefined,
-            guestAccessTokenHash,
-            startTime: new Date(startTime),
-            endTime: new Date(endTime),
-            durationMinutes,
-            priceSnapshot: {
-              hourlyRatePaise,
-              totalAmountPaise,
-              depositAmountPaise
-            },
-            bookingStatus: BookingStatus.PENDING_HOLD,
-            paymentStatus: PaymentStatus.UNPAID,
-            paymentType: paymentType || PaymentType.FULL,
-            holdExpiresAt,
-            notes: notes || ''
-          }
-        ],
-        { session }
-      );
-
-      // Pre-check for occupied slots before write operations
-      const occupied = await ReservationSlot.findOne({
-        stationId: station._id,
-        slotStartTime: { $in: slotTimes }
-      }).session(session);
-
-      if (occupied) {
-        const conflictError = new Error(
-          'One or more of the selected time slots are already reserved or held'
-        );
-        conflictError.statusCode = 409;
-        conflictError.code = 'SLOT_UNAVAILABLE';
-        throw conflictError;
-      }
-
-      // Prepare discrete slots for insertion
-      const slotDocs = slotTimes.map((t) => ({
-        stationId: station._id,
-        slotStartTime: t,
-        bookingId: booking._id,
-        status: SlotStatus.HELD,
-        expiresAt: holdExpiresAt
-      }));
-
-      // Insert slots. If any slot exists for (stationId, slotStartTime), unique compound index throws E11000!
-      await ReservationSlot.insertMany(slotDocs, { session });
-
-      await session.commitTransaction();
-
-      await booking.populate('stationId', 'identifier name type hourlyRatePaise');
-
-      return {
-        booking: booking.toJSON(),
-        guestToken: rawGuestToken
-      };
-    } catch (error) {
-      if (session.inTransaction()) {
-        await session.abortTransaction();
-      }
-
-      if (isSlotConflictOrWriteConflict(error)) {
-        const conflictError = new Error(
-          'One or more of the selected time slots are already reserved or held'
-        );
-        conflictError.statusCode = 409;
-        conflictError.code = 'SLOT_UNAVAILABLE';
-        throw conflictError;
-      }
-
-      throw error;
-    } finally {
-      session.endSession();
     }
   }
 

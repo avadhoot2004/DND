@@ -1,21 +1,75 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+let csrfToken = null;
+
 /**
- * Universal API client using native Fetch with credentials
+ * Fetch and cache CSRF token from the backend.
+ * Returns the cached token. Throws an Error with status code if not ok.
+ */
+export async function fetchCsrfToken() {
+  const url = `${API_BASE}/auth/csrf-token`;
+  const response = await fetch(url, {
+    method: 'GET',
+    credentials: 'include'
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch CSRF token: HTTP ${response.status}`);
+  }
+
+  const data = await response.json().catch(() => null);
+  csrfToken = data?.csrfToken || null;
+  return csrfToken;
+}
+
+/**
+ * Universal fetch wrapper with credentials and automatic CSRF handling.
+ * Returns raw Response object.
  */
 export async function apiFetch(endpoint, options = {}) {
-  const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
+  const url = endpoint.startsWith('http')
+    ? endpoint
+    : endpoint.startsWith(API_BASE)
+    ? endpoint
+    : `${API_BASE}${endpoint}`;
 
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(options.headers || {})
-  };
+  const method = (options.method || 'GET').toUpperCase();
+
+  const headers = options.headers instanceof Headers
+    ? options.headers
+    : {
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      };
+
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    if (!csrfToken) {
+      try {
+        await fetchCsrfToken();
+      } catch (err) {
+        // Guest or unauthenticated requests are CSRF-exempt on the backend
+      }
+    }
+    if (csrfToken) {
+      if (headers instanceof Headers) {
+        headers.set('X-CSRF-Token', csrfToken);
+      } else {
+        headers['X-CSRF-Token'] = csrfToken;
+      }
+    }
+  }
 
   const response = await fetch(url, {
     ...options,
     headers,
-    credentials: 'include' // Sends connect-mongo session cookies
+    credentials: 'include'
   });
+
+  return response;
+}
+
+async function request(endpoint, options = {}) {
+  const response = await apiFetch(endpoint, options);
 
   const data = await response.json().catch(() => null);
 
@@ -31,7 +85,8 @@ export async function apiFetch(endpoint, options = {}) {
 }
 
 export const api = {
-  getHealth: () => apiFetch('/health'),
+  fetchCsrfToken,
+  getHealth: () => request('/health'),
 
   // Station endpoints
   getStations: (params = {}) => {
@@ -40,21 +95,21 @@ export const api = {
     if (params.status) query.append('status', params.status);
     if (params.includeDeactivated) query.append('includeDeactivated', 'true');
     const queryString = query.toString();
-    return apiFetch(`/stations${queryString ? `?${queryString}` : ''}`);
+    return request(`/stations${queryString ? `?${queryString}` : ''}`);
   },
-  getStationById: (id) => apiFetch(`/stations/${id}`),
+  getStationById: (id) => request(`/stations/${id}`),
   createStation: (stationData) =>
-    apiFetch('/stations', {
+    request('/stations', {
       method: 'POST',
       body: JSON.stringify(stationData)
     }),
   updateStation: (id, stationData) =>
-    apiFetch(`/stations/${id}`, {
+    request(`/stations/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(stationData)
     }),
   deactivateStation: (id) =>
-    apiFetch(`/stations/${id}`, {
+    request(`/stations/${id}`, {
       method: 'DELETE'
     }),
 
@@ -67,31 +122,31 @@ export const api = {
     if (params.endDate) query.append('endDate', params.endDate);
     if (params.type) query.append('type', params.type);
     const queryString = query.toString();
-    return apiFetch(`/availability${queryString ? `?${queryString}` : ''}`);
+    return request(`/availability${queryString ? `?${queryString}` : ''}`);
   },
 
   // Booking endpoints
   createBookingHold: (bookingData) =>
-    apiFetch('/bookings/hold', {
+    request('/bookings/hold', {
       method: 'POST',
       body: JSON.stringify(bookingData)
     }),
   confirmBooking: (id, paymentData = {}) =>
-    apiFetch(`/bookings/${id}/confirm`, {
+    request(`/bookings/${id}/confirm`, {
       method: 'POST',
       body: JSON.stringify(paymentData)
     }),
   releaseBookingHold: (id, reason = 'Customer cancelled hold') =>
-    apiFetch(`/bookings/${id}/release`, {
+    request(`/bookings/${id}/release`, {
       method: 'POST',
       body: JSON.stringify({ reason })
     }),
-  getBookingById: (id) => apiFetch(`/bookings/${id}`),
-  getMyBookings: () => apiFetch('/bookings/my-bookings'),
+  getBookingById: (id) => request(`/bookings/${id}`),
+  getMyBookings: () => request('/bookings/my-bookings'),
 
   // Mock Payment Sandbox endpoints
   initiatePayment: ({ bookingId, guestAccessToken }) =>
-    apiFetch('/payments/initiate', {
+    request('/payments/initiate', {
       method: 'POST',
       body: JSON.stringify({
         bookingId,
@@ -99,7 +154,7 @@ export const api = {
       })
     }),
   simulatePayment: ({ paymentReference, outcome, failureReason }) =>
-    apiFetch('/payments/mock-simulate', {
+    request('/payments/mock-simulate', {
       method: 'POST',
       body: JSON.stringify({
         paymentReference,
@@ -108,7 +163,7 @@ export const api = {
       })
     }),
   getPaymentStatus: (paymentReference) =>
-    apiFetch(`/payments/${paymentReference}/status`),
+    request(`/payments/${paymentReference}/status`),
 
   // Owner / Staff management endpoints
   getAllBookings: (params = {}) => {
@@ -117,49 +172,51 @@ export const api = {
     if (params.stationId) query.append('stationId', params.stationId);
     if (params.date) query.append('date', params.date);
     const queryString = query.toString();
-    return apiFetch(`/bookings${queryString ? `?${queryString}` : ''}`);
+    return request(`/bookings${queryString ? `?${queryString}` : ''}`);
   },
   startSession: (id) =>
-    apiFetch(`/bookings/${id}/start`, {
+    request(`/bookings/${id}/start`, {
       method: 'POST'
     }),
   completeSession: (id) =>
-    apiFetch(`/bookings/${id}/complete`, {
+    request(`/bookings/${id}/complete`, {
       method: 'POST'
     }),
   markNoShow: (id) =>
-    apiFetch(`/bookings/${id}/no-show`, {
+    request(`/bookings/${id}/no-show`, {
       method: 'POST'
     }),
   extendSession: (id, extensionMinutes = 15) =>
-    apiFetch(`/bookings/${id}/extend`, {
+    request(`/bookings/${id}/extend`, {
       method: 'POST',
       body: JSON.stringify({ extensionMinutes })
     }),
   createMaintenance: (blockData) =>
-    apiFetch('/bookings/maintenance', {
+    request('/bookings/maintenance', {
       method: 'POST',
       body: JSON.stringify(blockData)
     }),
   cancelMaintenance: (id) =>
-    apiFetch(`/bookings/maintenance/${id}`, {
+    request(`/bookings/maintenance/${id}`, {
       method: 'DELETE'
     }),
 
   // Auth endpoints
   register: (userData) =>
-    apiFetch('/auth/register', {
+    request('/auth/register', {
       method: 'POST',
       body: JSON.stringify(userData)
     }),
   login: (credentials) =>
-    apiFetch('/auth/login', {
+    request('/auth/login', {
       method: 'POST',
       body: JSON.stringify(credentials)
     }),
-  logout: () =>
-    apiFetch('/auth/logout', {
+  logout: () => {
+    csrfToken = null;
+    return request('/auth/logout', {
       method: 'POST'
-    }),
-  getCurrentUser: () => apiFetch('/auth/me')
+    });
+  },
+  getCurrentUser: () => request('/auth/me')
 };

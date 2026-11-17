@@ -173,14 +173,14 @@ bookingSchema.index({ bookingStatus: 1, holdExpiresAt: 1 });
 bookingSchema.index({ paymentReference: 1 }, { sparse: true });
 
 /**
- * Generate human-readable unique reference format: DND-YYYYMMDD-XXXX
+ * Generate human-readable unique reference format: DND-YYYYMMDD-XXXXXXXXXXXXXXXX
  */
 bookingSchema.statics.generateBookingReference = function () {
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = String(now.getUTCMonth() + 1).padStart(2, '0');
   const day = String(now.getUTCDate()).padStart(2, '0');
-  const randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const randomSuffix = crypto.randomBytes(8).toString('hex').toUpperCase();
   return `DND-${year}${month}${day}-${randomSuffix}`;
 };
 

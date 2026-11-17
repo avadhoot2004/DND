@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { describe, expect, it, beforeEach, beforeAll } from 'vitest';
+import { describe, expect, it, beforeEach, beforeAll, vi } from 'vitest';
 import app from '../../src/app.js';
 import { Station } from '../../src/models/station.model.js';
 import { User } from '../../src/models/user.model.js';
@@ -488,6 +488,201 @@ describe('Booking Engine & Concurrency Integration Tests', () => {
       const bookingsInDb = await Booking.find({ stationId: testStation._id });
       expect(bookingsInDb).toHaveLength(1);
       expect(bookingsInDb[0]._id.toString()).toBe(winningBookingId.toString());
+    });
+  });
+
+  describe('Simultaneous Booking Attempts (5 Concurrent Requests)', () => {
+    it('should grant hold to exactly 1 request and reject 4 with 409 SLOT_UNAVAILABLE without 500 or 503', async () => {
+      const concurrentRequestsCount = 5;
+      const targetStartTime = '2026-11-20T14:00:00.000Z';
+      const targetEndTime = '2026-11-20T15:00:00.000Z'; // 60 minutes = 4 slots
+
+      // Prepare 5 requests targeting the exact same station and time window
+      const requests = Array.from({ length: concurrentRequestsCount }, (_, i) => {
+        return request(app)
+          .post('/api/bookings/hold')
+          .send({
+            stationId: testStation._id.toString(),
+            startTime: targetStartTime,
+            endTime: targetEndTime,
+            isGuest: true,
+            guestInfo: {
+              fullName: `Concurrent Guest #${i + 1}`,
+              email: `concurrent${i + 1}@gaminghub.test`,
+              phone: '9876543210'
+            }
+          });
+      });
+
+      // Send requests simultaneously using Promise.all() without artificial delays
+      const responses = await Promise.all(requests);
+
+      const successResponses = responses.filter((r) => r.status === 201);
+      const conflictResponses = responses.filter((r) => r.status === 409);
+      const serverErrorResponses = responses.filter((r) => r.status === 500 || r.status === 503);
+
+      // Assertions:
+      // - Exactly 1 response has HTTP 201.
+      expect(successResponses).toHaveLength(1);
+      expect(successResponses[0].body.success).toBe(true);
+      expect(successResponses[0].body.data.booking).toBeDefined();
+      expect(successResponses[0].body.data.booking.bookingStatus).toBe(BookingStatus.PENDING_HOLD);
+
+      // - Exactly 4 responses have HTTP 409 with code SLOT_UNAVAILABLE.
+      expect(conflictResponses).toHaveLength(4);
+      conflictResponses.forEach((r) => {
+        expect(r.body.success).toBe(false);
+        expect(r.body.error.code).toBe('SLOT_UNAVAILABLE');
+      });
+
+      // - No response has HTTP 500 or 503.
+      expect(serverErrorResponses).toHaveLength(0);
+
+      // - Exactly 1 Booking document exists for the test slot.
+      const bookingsForSlot = await Booking.find({
+        stationId: testStation._id,
+        startTime: new Date(targetStartTime)
+      });
+      expect(bookingsForSlot).toHaveLength(1);
+      const winningBookingId = successResponses[0].body.data.booking._id;
+      expect(bookingsForSlot[0]._id.toString()).toBe(winningBookingId.toString());
+
+      // - Exactly 4 ReservationSlot documents exist for that booking.
+      const slotsForBooking = await ReservationSlot.find({ bookingId: winningBookingId });
+      expect(slotsForBooking).toHaveLength(4);
+      slotsForBooking.forEach((slot) => {
+        expect(slot.status).toBe(SlotStatus.HELD);
+        expect(slot.stationId.toString()).toBe(testStation._id.toString());
+      });
+
+      // - No duplicate (stationId, slotStartTime) combinations exist.
+      const duplicateSlots = await ReservationSlot.aggregate([
+        {
+          $group: {
+            _id: { stationId: '$stationId', slotStartTime: '$slotStartTime' },
+            count: { $sum: 1 }
+          }
+        },
+        { $match: { count: { $gt: 1 } } }
+      ]);
+      expect(duplicateSlots).toHaveLength(0);
+    });
+  });
+
+  describe('Booking Reference Collision & Retry Handling', () => {
+    it('should generate a reference with an 8-byte (16 hex character) random suffix', () => {
+      const ref = Booking.generateBookingReference();
+      // Format: DND-YYYYMMDD-XXXXXXXXXXXXXXXX (8-byte hex suffix = 16 characters)
+      const match = ref.match(/^DND-\d{8}-([A-F0-9]{16})$/);
+      expect(match).not.toBeNull();
+      expect(match[1]).toHaveLength(16);
+    });
+
+    it('should retry transaction and succeed with a new reference when bookingReference collides', async () => {
+      const existingRef = 'DND-20261125-PREEXISTING01';
+      // Seed an existing booking that already has this reference
+      await Booking.create({
+        bookingReference: existingRef,
+        stationId: testStation._id,
+        isGuest: true,
+        guestInfo: { fullName: 'Original Holder', email: 'orig@example.com' },
+        startTime: new Date('2026-11-25T08:00:00.000Z'),
+        endTime: new Date('2026-11-25T09:00:00.000Z'),
+        durationMinutes: 60,
+        priceSnapshot: { hourlyRatePaise: 12000, totalAmountPaise: 12000, depositAmountPaise: 6000 },
+        bookingStatus: BookingStatus.CONFIRMED,
+        paymentStatus: 'PAID'
+      });
+
+      const uniqueRef = 'DND-20261125-UNIQUEREF0002';
+      const spy = vi.spyOn(Booking, 'generateBookingReference')
+        .mockReturnValueOnce(existingRef) // Attempt 1: collides with existingRef
+        .mockReturnValueOnce(uniqueRef);  // Attempt 2: returns uniqueRef
+
+      const targetStartTime = '2026-11-25T10:00:00.000Z';
+      const targetEndTime = '2026-11-25T11:00:00.000Z';
+
+      const res = await request(app).post('/api/bookings/hold').send({
+        stationId: testStation._id.toString(),
+        startTime: targetStartTime,
+        endTime: targetEndTime,
+        isGuest: true,
+        guestInfo: { fullName: 'Retry Guest', email: 'retry@example.com' }
+      });
+
+      spy.mockRestore();
+
+      // Should succeed on attempt 2
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.booking.bookingReference).toBe(uniqueRef);
+
+      // Verify database state: exactly 2 bookings in total (original + retry guest)
+      const allBookings = await Booking.find({});
+      expect(allBookings).toHaveLength(2);
+
+      // Verify slots for new booking
+      const newBookingId = res.body.data.booking._id;
+      const slots = await ReservationSlot.find({ bookingId: newBookingId });
+      expect(slots).toHaveLength(4);
+      slots.forEach((s) => {
+        expect(s.status).toBe(SlotStatus.HELD);
+      });
+    });
+
+    it('should fail cleanly without partial records when bookingReference collision retries are exhausted (3 attempts)', async () => {
+      const permanentCollidingRef = 'DND-20261125-PERMCOLLIDE01';
+      // Seed an existing booking that already holds this reference
+      await Booking.create({
+        bookingReference: permanentCollidingRef,
+        stationId: testStation._id,
+        isGuest: true,
+        guestInfo: { fullName: 'Blocking Holder', email: 'block@example.com' },
+        startTime: new Date('2026-11-25T08:00:00.000Z'),
+        endTime: new Date('2026-11-25T09:00:00.000Z'),
+        durationMinutes: 60,
+        priceSnapshot: { hourlyRatePaise: 12000, totalAmountPaise: 12000, depositAmountPaise: 6000 },
+        bookingStatus: BookingStatus.CONFIRMED,
+        paymentStatus: 'PAID'
+      });
+
+      // Always return the colliding reference across all 3 attempts
+      const spy = vi.spyOn(Booking, 'generateBookingReference')
+        .mockReturnValue(permanentCollidingRef);
+
+      const targetStartTime = '2026-11-25T12:00:00.000Z';
+      const targetEndTime = '2026-11-25T13:00:00.000Z';
+
+      const res = await request(app).post('/api/bookings/hold').send({
+        stationId: testStation._id.toString(),
+        startTime: targetStartTime,
+        endTime: targetEndTime,
+        isGuest: true,
+        guestInfo: { fullName: 'Exhausted Guest', email: 'exhaust@example.com' }
+      });
+
+      spy.mockRestore();
+
+      // Must NOT be mapped to 409 SLOT_UNAVAILABLE or 503 CONCURRENCY_CONFLICT
+      expect(res.status).toBe(500);
+      expect(res.status).not.toBe(409);
+      expect(res.status).not.toBe(503);
+      if (res.body.error) {
+        expect(res.body.error.code).not.toBe('SLOT_UNAVAILABLE');
+        expect(res.body.error.code).not.toBe('CONCURRENCY_CONFLICT');
+      }
+
+      // Crucially: no partial booking or reservation slots created for the failed request
+      const failedBooking = await Booking.findOne({ startTime: new Date(targetStartTime) });
+      expect(failedBooking).toBeNull();
+
+      const failedSlots = await ReservationSlot.find({
+        slotStartTime: {
+          $gte: new Date(targetStartTime),
+          $lt: new Date(targetEndTime)
+        }
+      });
+      expect(failedSlots).toHaveLength(0);
     });
   });
 });

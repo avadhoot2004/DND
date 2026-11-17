@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { api } from '../services/api';
+import { api, fetchCsrfToken } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -14,6 +14,13 @@ export function AuthProvider({ children }) {
       try {
         const res = await api.getCurrentUser();
         setUser(res.data?.user || null);
+        if (res.data?.user) {
+          try {
+            await fetchCsrfToken();
+          } catch (csrfErr) {
+            console.warn('Failed to fetch CSRF token on initial session load:', csrfErr);
+          }
+        }
       } catch (err) {
         // Not logged in or session expired
         setUser(null);
@@ -29,6 +36,11 @@ export function AuthProvider({ children }) {
     try {
       const res = await api.login({ email, password });
       setUser(res.data.user);
+      try {
+        await fetchCsrfToken();
+      } catch (csrfErr) {
+        console.warn('Failed to fetch CSRF token after login:', csrfErr);
+      }
       return { success: true, user: res.data.user };
     } catch (err) {
       setError(err.message);
@@ -41,6 +53,11 @@ export function AuthProvider({ children }) {
     try {
       const res = await api.register(userData);
       setUser(res.data.user);
+      try {
+        await fetchCsrfToken();
+      } catch (csrfErr) {
+        console.warn('Failed to fetch CSRF token after registration:', csrfErr);
+      }
       return { success: true, user: res.data.user };
     } catch (err) {
       setError(err.message);

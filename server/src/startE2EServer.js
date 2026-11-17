@@ -12,28 +12,69 @@ import {
   UserRole
 } from './constants/index.js';
 
-let replSet;
-let server;
+let replSet = null;
+let server = null;
 
 async function start() {
   try {
-    console.log('[E2E-Backend] Starting in-memory MongoDB replica set rs0...');
-    replSet = await MongoMemoryReplSet.create({
-      replSet: { count: 1, storageEngine: 'wiredTiger' }
-    });
-    const uri = replSet.getUri();
-    console.log(`[E2E-Backend] Replica Set started: ${uri}`);
+    const customUri = process.env.MONGO_URI || process.env.MONGODB_URI;
+    const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 5000;
+    let uri;
+
+    if (customUri) {
+      console.log(`[E2E/Load-Backend] Using specified database URI: ${customUri}`);
+      uri = customUri;
+    } else {
+      console.log('[E2E/Load-Backend] Starting in-memory MongoDB replica set rs0...');
+      replSet = await MongoMemoryReplSet.create({
+        replSet: { count: 1, storageEngine: 'wiredTiger' }
+      });
+      uri = replSet.getUri();
+      console.log(`[E2E/Load-Backend] In-memory Replica Set started: ${uri}`);
+    }
 
     await mongoose.connect(uri);
-    console.log('[E2E-Backend] Mongoose connected successfully.');
+    const dbName = mongoose.connection.name;
+    console.log(`[E2E/Load-Backend] Mongoose connected successfully to database: '${dbName}'.`);
 
-    // Initialize indexes
+    // Strict Database Safety Check
+    if (customUri) {
+      if (dbName !== 'dnd_gaming_k6') {
+        console.error(
+          `❌ [CRITICAL SAFETY ABORT] Connected database is '${dbName}'. ` +
+          `The load-testing server is strictly restricted to 'dnd_gaming_k6'. ` +
+          `Refusing to perform cleanup or run on any other database.`
+        );
+        process.exit(1);
+      }
+    } else {
+      // In-memory safety guard: must never point to the development database
+      if (dbName === 'dnd_gaming_hub') {
+        console.error(
+          `❌ [CRITICAL SAFETY ABORT] Connected database is 'dnd_gaming_hub'. ` +
+          `Aborting startup immediately to protect the development database.`
+        );
+        process.exit(1);
+      }
+    }
+
+    // Initialize model indexes
     await Promise.all([
       Station.init(),
       User.init(),
       Booking.init(),
       ReservationSlot.init(),
       PaymentTransaction.init()
+    ]);
+
+    // Clear only test data from the isolated test database
+    console.log(`[E2E/Load-Backend] Cleaning test database '${dbName}'...`);
+    await Promise.all([
+      Booking.deleteMany({}),
+      ReservationSlot.deleteMany({}),
+      PaymentTransaction.deleteMany({}),
+      Station.deleteMany({}),
+      User.deleteMany({})
     ]);
 
     // Seed Stations
@@ -100,13 +141,10 @@ async function start() {
       }
     ];
 
-    await Station.deleteMany({});
     await Station.insertMany(stations);
-    console.log(`[E2E-Backend] Seeded ${stations.length} stations.`);
+    console.log(`[E2E/Load-Backend] Seeded ${stations.length} stations.`);
 
     // Seed Dedicated Test Accounts (ADMIN, STAFF, CUSTOMER)
-    await User.deleteMany({});
-
     const adminHash = await User.hashPassword('AdminPass123!');
     await User.create({
       email: 'admin@dndgaming.com',
@@ -134,15 +172,16 @@ async function start() {
       isActive: true
     });
 
-    console.log('[E2E-Backend] Seeded ADMIN, STAFF, and CUSTOMER accounts.');
+    console.log('[E2E/Load-Backend] Seeded ADMIN, STAFF, and CUSTOMER accounts.');
 
-    // Start Express HTTP Server on Port 5000
-    server = app.listen(5000, () => {
-      console.log('🚀 [E2E-Backend] Running on http://localhost:5000');
+    // Start Express HTTP Server on specified port
+    server = app.listen(port, () => {
+      console.log(`🚀 [E2E/Load-Backend] Running on http://localhost:${port}`);
+      console.log(`📡 Health Check: http://localhost:${port}/api/health`);
     });
 
     const shutdown = async () => {
-      console.log('\n[E2E-Backend] Gracefully shutting down...');
+      console.log('\n[E2E/Load-Backend] Gracefully shutting down...');
       if (server) {
         await new Promise((res) => server.close(res));
       }
@@ -152,17 +191,16 @@ async function start() {
       if (replSet) {
         await replSet.stop();
       }
-      console.log('[E2E-Backend] Teardown complete.');
+      console.log('[E2E/Load-Backend] Teardown complete.');
       process.exit(0);
     };
 
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } catch (err) {
-    console.error('[E2E-Backend] Failed to start:', err);
+    console.error('[E2E/Load-Backend] Failed to start:', err);
     process.exit(1);
   }
 }
 
 start();
-
