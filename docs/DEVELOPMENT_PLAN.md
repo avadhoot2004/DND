@@ -40,15 +40,15 @@
   - [x] Session lifecycle management (Start, Complete, No-Show, Extend).
   - [x] Client production bundle build & full suite verification (50/50 tests passing).
 
-- [ ] **Day 6: Payments, Email Notifications & Testing Expansion**
+- [x] **Day 6: Payments, Email Notifications & Testing Expansion**
   - [x] Secure mock payment sandbox & authorization (HMAC signed webhook, idempotent processor, 61/61 tests passing).
   - [x] Late-payment reconciliation and idempotent refund handler (84/84 tests passing).
   - [x] Asynchronous email confirmation service (non-fatal post-commit dispatch, 10/10 tests passing).
-  - [ ] End-to-end user journeys with Playwright.
-  - [ ] Initial k6 load test validation.
+  - [x] End-to-end user journeys with Playwright.
+  - [x] Initial k6 load test validation.
 
-- [ ] **Day 7: Production Hardening, Deployment & Final Documentation**
-  - [ ] Security audit (Helmet, rate limits, NoSQL sanitization).
-  - [ ] Client & server production bundle builds.
-  - [ ] Deployment guides and cloud configurations.
-  - [ ] Final demonstration and verification.
+- [x] **Day 7: Production Hardening, Deployment & Final Documentation**
+  - [x] Security audit (Helmet, rate limits, NoSQL sanitization).
+  - [x] Client & server production bundle builds.
+  - [x] Deployment guides and cloud configurations.
+  - [x] Final demonstration and verification.
